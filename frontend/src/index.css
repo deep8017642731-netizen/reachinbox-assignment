@@ -1,53 +1,72 @@
 /**
  * Tailwind CSS 4 entry point.
  *
- * Tailwind 4 is configured in CSS, not JavaScript: there is no tailwind.config.js
- * and no PostCSS pipeline. `@import "tailwindcss"` brings in the framework, and
- * `@theme` defines design tokens that become both CSS variables and utility
- * classes (adding `--color-brand-600` here creates `bg-brand-600`, `text-brand-600`,
- * etc.).
+ * Tailwind 4 is configured in CSS, not JavaScript: no tailwind.config.js and no
+ * PostCSS pipeline. `@import "tailwindcss"` loads the framework, and `@theme`
+ * defines design tokens that become BOTH CSS variables and utility classes
+ * (declaring `--color-brand-600` here creates `bg-brand-600`, `text-brand-600`, …).
  *
- * Everything else in the UI uses Tailwind's default palette so the markup stays
- * readable and there is one obvious place to change brand colours later.
+ * The palette matches the supplied Figma frames: a green primary action colour
+ * with neutral grey surfaces, rather than the indigo default.
  */
 @import 'tailwindcss';
 
 @theme {
-  /* Brand colour — indigo by default. Change these six values to re-skin the UI. */
-  --color-brand-50: oklch(0.962 0.018 272.314);
-  --color-brand-100: oklch(0.93 0.034 272.788);
-  --color-brand-200: oklch(0.87 0.065 274.039);
-  --color-brand-300: oklch(0.785 0.115 274.713);
-  --color-brand-400: oklch(0.673 0.182 276.935);
-  --color-brand-500: oklch(0.585 0.233 277.117);
-  --color-brand-600: oklch(0.511 0.262 276.966);
-  --color-brand-700: oklch(0.457 0.24 277.023);
-  --color-brand-800: oklch(0.398 0.195 277.366);
-  --color-brand-900: oklch(0.359 0.144 278.697);
+  /* ---- brand (green) -------------------------------------------------------
+     Values track Tailwind's emerald scale so the UI stays consistent with the
+     rest of the utility classes already in use. */
+  --color-brand-50: oklch(0.979 0.021 166.113);
+  --color-brand-100: oklch(0.95 0.052 163.051);
+  --color-brand-200: oklch(0.905 0.093 164.15);
+  --color-brand-300: oklch(0.845 0.143 164.978);
+  --color-brand-400: oklch(0.765 0.177 163.223);
+  --color-brand-500: oklch(0.696 0.17 162.48);
+  --color-brand-600: oklch(0.596 0.145 163.225);
+  --color-brand-700: oklch(0.508 0.118 165.612);
+  --color-brand-800: oklch(0.432 0.095 166.913);
+  --color-brand-900: oklch(0.378 0.077 168.94);
 
-  /* One radius scale for the whole app, so cards, buttons and inputs match. */
-  --radius-card: 0.75rem;
+  /* ---- surfaces ------------------------------------------------------------
+     The frames use almost no borders: large neutral fills do the separating.
+     These two tokens are the only greys that are not plain Tailwind values. */
+  --color-surface-muted: #f6f7f8; /* search field, editor box, input fills */
+  --color-surface-app: #fbfcfd; /* page background, a hair above white */
+
+  /* Pill buttons and the search field in the frames are fully rounded. */
+  --radius-pill: 9999px;
 }
 
 /* ---------------------------------------------------------------------------
-   Small global touches
+   Global touches
    --------------------------------------------------------------------------- */
 
 html {
-  /* Keeps the layout from shifting when a page grows taller than the viewport. */
+  /* Prevents the layout from shifting when a list grows past one screen. */
   scrollbar-gutter: stable;
 }
 
 body {
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  background-color: var(--color-surface-app);
 }
 
-/* Visible keyboard focus everywhere. Accessibility is not decoration: a
-   dashboard with no focus ring is unusable with a keyboard. */
+/* Visible keyboard focus everywhere. A dashboard without a focus ring is
+   unusable with a keyboard. */
 :focus-visible {
-  outline: 2px solid var(--color-brand-500);
+  outline: 2px solid var(--color-brand-600);
   outline-offset: 2px;
+}
+
+/* Chrome's "search" input shows its own clear button; the design supplies one. */
+input[type='search']::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+/* The date/time picker indicator is invisible on some browsers. */
+input[type='datetime-local']::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.55;
 }
 
 /* Respect users who have asked their OS to reduce motion. */

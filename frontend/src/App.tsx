@@ -1,46 +1,52 @@
 /**
  * App shell: providers, routing and the auth gate.
  *
- * ROUTES
- *   /login      public
- *   /dashboard  requires a session
- *   anything else redirects
+ * ROUTE SHAPE (chosen to match the frames)
+ *   /login                     centred login card (AP1)
+ *   /dashboard/scheduled       sidebar layout + list (AP2)
+ *   /dashboard/sent            sidebar layout + list (P3)
+ *   /dashboard/compose         full-width composer, no sidebar (AP5-AP7)
+ *   /dashboard/emails/:id      full-width message view, no sidebar (AP4)
  *
- * WHY react-router AND NOT CONDITIONAL RENDERING
+ * Why the sidebar layout is a ROUTE instead of a component each page renders:
+ *   - `/dashboard/scheduled` and `/dashboard/sent` are real URLs, so the nav items
+ *     are links (shareable, back-button friendly) rather than click handlers.
+ *   - Compose and the message view intentionally sit OUTSIDE it, because both
+ *     frames show a full-width page with no navigation rail.
+ *
  * The backend performs real browser redirects to absolute paths
- * (`${FRONTEND_URL}/dashboard` after Google login, `?slack=connected` after Slack).
- * Those paths must exist as routes. A state-only "which screen am I showing"
- * boolean would render the wrong page on arrival and lose the query string the
- * dashboard needs to report the Slack result.
- *
- * THE AUTH GATE deliberately renders a full-page loading state while the first
- * /api/auth/me request is in flight. Rendering the dashboard first and redirecting
- * afterwards would flash the UI for a split second and then bounce the user out —
- * the classic signed-out flicker.
+ * (`${FRONTEND_URL}/dashboard` after Google sign-in, `?slack=connected` after
+ * Slack), which is why this is real routing rather than a screen boolean: those
+ * paths must exist and the query string must survive.
  */
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ToastProvider, ToastViewport } from './context/ToastContext';
+import { DashboardLayout } from './layouts/DashboardLayout';
 import { LoginPage } from './pages/LoginPage';
-import { DashboardPage } from './pages/DashboardPage';
-import { Spinner } from './components/ui/Feedback';
+import { EmailsPage } from './pages/EmailsPage';
+import { ComposePage } from './pages/ComposePage';
+import { EmailDetailPage } from './pages/EmailDetailPage';
 
-/** Blocks /dashboard until we know whether there is a session. */
+/** Blocks protected routes until we know whether there is a session. */
 function RequireAuth({ children }: { children: React.ReactElement }) {
   const { user, loading } = useAuth();
   const location = useLocation();
 
   if (loading) {
     return (
-      <div className="flex min-h-full flex-col items-center justify-center gap-3">
-        <Spinner size={26} />
+      <div className="flex min-h-screen flex-col items-center justify-center gap-3">
+        <svg className="h-6 w-6 animate-spin text-slate-400" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8v4a4 4 0 0 0-4 4H4z" />
+        </svg>
         <p className="text-sm text-slate-500">Loading your dashboard…</p>
       </div>
     );
   }
 
   if (!user) {
-    // `replace` keeps the protected URL out of history, so Back does not bounce
+    // `replace` keeps the protected URL out of history so Back does not bounce
     // the user between the dashboard and the login page.
     return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   }
@@ -67,16 +73,40 @@ function AppRoutes() {
           </RedirectIfAuthenticated>
         }
       />
+
+      {/* Sidebar layout: the two list views. */}
       <Route
-        path="/dashboard"
         element={
           <RequireAuth>
-            <DashboardPage />
+            <DashboardLayout />
+          </RequireAuth>
+        }
+      >
+        <Route path="/dashboard" element={<Navigate to="/dashboard/scheduled" replace />} />
+        <Route path="/dashboard/scheduled" element={<EmailsPage variant="scheduled" />} />
+        <Route path="/dashboard/sent" element={<EmailsPage variant="sent" />} />
+      </Route>
+
+      {/* Full-width pages: no sidebar, matching the design frames. */}
+      <Route
+        path="/dashboard/compose"
+        element={
+          <RequireAuth>
+            <ComposePage />
           </RequireAuth>
         }
       />
-      {/* Unknown paths (including "/") go to the dashboard, which redirects to
-          /login if there is no session. */}
+      <Route
+        path="/dashboard/emails/:id"
+        element={
+          <RequireAuth>
+            <EmailDetailPage />
+          </RequireAuth>
+        }
+      />
+
+      {/* Unknown paths go to the dashboard, which redirects to /login when there
+          is no session. */}
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
   );
@@ -89,7 +119,7 @@ export default function App() {
       <ToastProvider>
         <AuthProvider>
           <AppRoutes />
-          {/* Rendered once; every component talks to it through useToast(). */}
+          {/* Rendered once; components reach it through useToast(). */}
           <ToastViewport />
         </AuthProvider>
       </ToastProvider>

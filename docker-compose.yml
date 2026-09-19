@@ -1,0 +1,114 @@
+# =============================================================================
+# ReachInbox Email Scheduler — local infrastructure
+# =============================================================================
+#   docker compose up -d              start everything in the background
+#   docker compose ps                 check health
+#   docker compose logs -f redis      tail one service
+#   docker compose down               stop (data is KEPT in named volumes)
+#   docker compose down -v            stop AND DELETE data (fresh start)
+#
+# All three services use NAMED VOLUMES, which is what makes the mandatory
+# "restart persistence" demo work: `docker compose down` + `up` keeps your
+# database, your queue jobs and your search index intact. Only `down -v` wipes
+# them.
+#
+# The `version:` key is intentionally omitted — it is obsolete in Compose v2.
+# =============================================================================
+
+name: reachinbox-assignment
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — the source of truth for business state
+  # (users, senders, emails, their statuses and timestamps)
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:17-alpine
+    container_name: reachinbox-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: reachinbox
+      POSTGRES_PASSWORD: reachinbox
+      POSTGRES_DB: reachinbox
+      # Deterministic collation -> stable ORDER BY results across machines.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # `docker compose up --wait` (and our own health endpoint) use this.
+      test: ["CMD-SHELL", "pg_isready -U reachinbox -d reachinbox"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Redis — BullMQ queues (delayed jobs) + distributed rate-limit counters
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:8-alpine
+    container_name: reachinbox-redis
+    restart: unless-stopped
+    command:
+      - redis-server
+      # Append-only file: Redis survives a process/container restart.
+      # Without this, delayed BullMQ jobs would be lost on restart.
+      - --appendonly
+      - "yes"
+      # BullMQ REQUIRES noeviction. If Redis is allowed to evict keys under
+      # memory pressure it can silently delete job data or rate-limit counters,
+      # which would mean lost or duplicated emails. Fail loudly instead.
+      - --maxmemory-policy
+      - noeviction
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  # ---------------------------------------------------------------------------
+  # Elasticsearch — full-text search over emails
+  # (PostgreSQL answers "give me my emails"; Elasticsearch answers
+  #  "find emails mentioning 'john', anywhere in subject/body/recipient")
+  # ---------------------------------------------------------------------------
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.3
+    container_name: reachinbox-elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      # LOCAL DEMO ONLY. This disables auth so `http://localhost:9200` just
+      # works. Never ship this setting to a real server.
+      - xpack.security.enabled=false
+      - xpack.security.http.ssl.enabled=false
+      # Keep the JVM small enough for a student laptop.
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - bootstrap.memory_lock=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test:
+        ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      # Elasticsearch takes ~30-60s to become usable on a cold start.
+      start_period: 60s
+
+volumes:
+  postgres_data:
+  redis_data:
+  elasticsearch_data:

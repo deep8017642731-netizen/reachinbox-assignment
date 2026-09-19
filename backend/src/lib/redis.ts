@@ -18,12 +18,14 @@
  * retries, and a Worker that throws mid-block can end up in a broken state.
  */
 import Redis, { type RedisOptions } from 'ioredis';
+import { createClient, type RedisClientType } from 'redis';
 // BullMQ declares its own (slightly different) RedisOptions. Using the ioredis
 // type here fails to compile because ioredis allows `retryStrategy: null`,
 // which BullMQ's type does not accept.
 import type { RedisOptions as BullRedisOptions } from 'bullmq';
 import { env } from '../config/env';
 import { createLogger } from './logger';
+
 
 const log = createLogger('Redis');
 
@@ -103,4 +105,40 @@ export async function disconnectRedis(): Promise<void> {
   await client.quit().catch(() => client.disconnect());
   globalForRedis.appRedisClient = undefined;
   log.info('Disconnected');
+}
+
+let sessionRedisClient: RedisClientType | undefined;
+
+export function getSessionRedis(): RedisClientType {
+  if (!sessionRedisClient) {
+    sessionRedisClient = createClient({
+      socket: {
+        host: env.REDIS_HOST,
+        port: env.REDIS_PORT,
+      },
+      password: env.REDIS_PASSWORD || undefined,
+    });
+
+    sessionRedisClient.on('error', (error) => {
+      log.error('Session Redis error', { message: error.message });
+    });
+  }
+
+  return sessionRedisClient;
+}
+
+export async function connectSessionRedis(): Promise<void> {
+  const client = getSessionRedis();
+
+  if (!client.isOpen) {
+    await client.connect();
+  }
+}
+
+export async function disconnectSessionRedis(): Promise<void> {
+  if (sessionRedisClient?.isOpen) {
+    await sessionRedisClient.quit();
+  }
+
+  sessionRedisClient = undefined;
 }

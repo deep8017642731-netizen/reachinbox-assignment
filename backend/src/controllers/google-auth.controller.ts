@@ -33,7 +33,7 @@ function redirectWithError(res: Response, code: string): void {
  * When credentials are absent we say so explicitly rather than impersonating
  * Google's consent screen.
  */
-export function handleGoogleStart(req: Request, res: Response): void {
+export async function handleGoogleStart(req: Request, res: Response): Promise<void> {
   const config = getGoogleOAuthConfig();
   if (!config) {
     log.warn('Google login attempted but OAuth is not configured');
@@ -43,6 +43,7 @@ export function handleGoogleStart(req: Request, res: Response): void {
 
   try {
     const state = createOAuthState();
+    await saveSession(req);
     rememberOAuthState(req, state);
     const url = buildGoogleAuthorizeUrl(state);
     log.info('Redirecting to Google for consent');

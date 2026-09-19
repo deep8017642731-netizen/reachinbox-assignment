@@ -15,14 +15,18 @@ import helmet from 'helmet';
 import session from 'express-session';
 import { RedisStore } from 'connect-redis';
 
-import { env, isProduction } from './config/env';
+import { adminEmails, env, isProduction } from './config/env';
 import { getRedis } from './lib/redis';
 import { createLogger } from './lib/logger';
 import { notFoundHandler, errorHandler } from './middleware/error.middleware';
+import { requireAdmin, requireAuth } from './middleware/auth.middleware';
+import { BULL_BOARD_PATH, createQueueDashboardRouter } from './admin/queues.dashboard';
 import emailRoutes from './routes/email.routes';
 import senderRoutes from './routes/sender.routes';
 import healthRoutes from './routes/health.routes';
 import authRoutes from './routes/auth.routes';
+import slackRoutes from './routes/slack.routes';
+import oauthRoutes from './routes/oauth.routes';
 
 const log = createLogger('HTTP');
 
@@ -133,6 +137,25 @@ export function createApp(): Express {
   app.use('/api/auth', authRoutes);
   app.use('/api/emails', emailRoutes);
   app.use('/api/senders', senderRoutes);
+  app.use('/api/slack', slackRoutes);
+
+  // Browser-facing OAuth (redirect URIs registered with Google and Slack).
+  app.use('/auth', oauthRoutes);
+
+  /**
+   * Bull Board — the real queue dashboard.
+   *
+   * Layered protection: requireAuth resolves the identity, requireAdmin decides
+   * whether that identity may see queue internals (job payloads contain recipient
+   * addresses). In development an empty ADMIN_EMAILS allows access for convenience;
+   * in production an empty allow-list denies everyone.
+   */
+  app.use(
+    BULL_BOARD_PATH,
+    requireAuth,
+    requireAdmin(adminEmails),
+    createQueueDashboardRouter(),
+  );
 
   // Tiny root endpoint so hitting the bare host is not a 404 mystery.
   app.get('/', (_req, res) => {

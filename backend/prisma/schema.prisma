@@ -1,0 +1,180 @@
+// =============================================================================
+// ReachInbox Email Scheduler — Prisma schema
+// =============================================================================
+// This file is the single source of truth for the PostgreSQL structure.
+//
+// Big picture:
+//   PostgreSQL stores BUSINESS STATE  -> who scheduled what, to whom, and what
+//                                        happened to it (SCHEDULED/SENT/FAILED).
+//   Redis/BullMQ stores TIMING STATE  -> "wake up and send email <id> at 15:04".
+//
+// The two are deliberately NOT duplicated. A BullMQ job payload contains only an
+// email id; everything else lives here. That keeps restart behaviour honest:
+// if Redis survives, the job survives; if the row survives, the email is known.
+//
+// Migrations:
+//   npx prisma migrate dev --name <name>   (development: creates + applies)
+//   npx prisma migrate deploy              (production/CI: applies only)
+//   npx prisma generate                    (regenerates the typed client)
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// -----------------------------------------------------------------------------
+// Enums
+// -----------------------------------------------------------------------------
+
+/// Lifecycle of a single email.
+/// MIRRORED in `src/types/index.ts` (EMAIL_STATUSES) and compile-time checked in
+/// `src/lib/status-parity.ts` so the TypeScript contract can never drift.
+enum EmailStatus {
+  SCHEDULED // row created + delayed BullMQ job enqueued, nothing sent yet
+  PROCESSING // a worker picked the job up and is about to send
+  SENT // SMTP accepted the message (terminal)
+  FAILED // delivery failed after all BullMQ attempts were exhausted (terminal)
+  CANCELLED // cancelled by the user before delivery (terminal)
+}
+
+// -----------------------------------------------------------------------------
+// Models
+// -----------------------------------------------------------------------------
+
+/// A human being who logged in with Google. Everything else hangs off this row,
+/// which is what makes per-user data isolation possible.
+model User {
+  id       String @id @default(uuid())
+  /// Google's stable user identifier ("sub" claim) — never the email address,
+  /// because emails can change over time.
+  googleId String @unique
+  name     String
+  email    String @unique
+  avatar   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  senders         Sender[]
+  emails          Email[]
+  slackConnection SlackConnection?
+
+  @@map("users")
+}
+
+/// A "from" address the user may send as. One user -> many senders.
+/// A sender is also the rate-limiting unit: `sender:<id>:hour:<utc-hour>`.
+model Sender {
+  id          String  @id @default(uuid())
+  userId      String
+  email       String
+  displayName String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emails Email[]
+
+  /// The same address may not be added twice for one user...
+  @@unique([userId, email])
+  /// ...and user-scoped lookups ("list my senders") must be indexed.
+  @@index([userId])
+  @@map("senders")
+}
+
+/// One row = one email to one recipient. A scheduling request with 3 recipients
+/// creates 3 rows that share a `batchId` (a "campaign").
+model Email {
+  id String @id @default(uuid())
+
+  // --- ownership ---
+  userId   String
+  senderId String
+  /// Groups the rows that came from a single POST /api/emails/schedule call.
+  /// Lets the UI cancel/inspect a whole batch and gives searches a useful key.
+  batchId  String
+
+  // --- content ---
+  recipient String
+  subject   String
+  body      String
+
+  // --- business state (the part the worker must respect) ---
+  status       EmailStatus @default(SCHEDULED)
+  scheduledAt  DateTime
+  sentAt       DateTime?
+  failedAt     DateTime?
+  errorMessage String?
+  /// How many times a worker has actually tried to hand this email to SMTP.
+  /// Distinct from BullMQ's own attempt counter, which counts *queue* attempts.
+  attempts     Int         @default(0)
+
+  // --- scheduling configuration captured at request time ---
+  // Stored per row (not per batch, not in Redis) so a worker that picks the job
+  // up after a restart still knows the rules without a second lookup.
+  /// 0-based position inside the batch: deterministic ordering key.
+  sequence             Int
+  delayBetweenEmailsMs Int
+  hourlyLimit          Int
+
+  // --- evidence for the demo / debugging ---
+  /// SMTP message id returned by the Ethereal server.
+  messageId  String?
+  /// Ethereal "view the received message" URL (test accounts only).
+  previewUrl String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sender Sender @relation(fields: [senderId], references: [id], onDelete: Cascade)
+
+  /// Drives "my scheduled emails, soonest first".
+  @@index([userId, status, scheduledAt])
+  /// Drives "my sent emails, newest first" and the dashboard counters.
+  @@index([userId, status, sentAt])
+  /// Drives per-sender rate-limit accounting and auditing.
+  @@index([senderId, status])
+  /// Drives batch-level operations (cancel batch, progress display).
+  @@index([batchId, sequence])
+  @@map("emails")
+}
+
+/// The Slack workspace a user connected through OAuth 2.0.
+///
+/// SECURITY: `accessToken` must NEVER be selected into an API response. The
+/// Slack service reads it server-side; the controller only ever returns the
+/// safe projection (teamName/connected/channelName — see `toPublicShape`).
+model SlackConnection {
+  id     String @id @default(uuid())
+  userId String @unique // one Slack workspace per user; reconnecting replaces it
+
+  teamId   String
+  teamName String
+  /// Bot/user OAuth token ('xoxb-…'). Server-side only.
+  accessToken String
+  /// Comma-separated granted scopes, e.g. "chat:write,team:read".
+  scope       String?
+
+  /// Destination for rate-limit alerts. Resolved during the OAuth callback so
+  /// notifications work immediately; falls back to the first channel the bot is in.
+  channelId   String?
+  channelName String?
+
+  /// false = user disconnected. We keep the row (and its history) but the
+  /// notification service treats it as "no Slack", so the system keeps working.
+  connected Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("slack_connections")
+}

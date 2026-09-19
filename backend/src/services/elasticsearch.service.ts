@@ -37,9 +37,17 @@ export const EMAIL_INDEX = env.ELASTICSEARCH_EMAIL_INDEX;
  *  - `text`     : full-text search, analysed into tokens.
  *  - `date`     : correctly parseable/sortable timestamps.
  *
- * `recipient` is `text` WITH a `keyword` sub-field: `text` lets a search for
- * "john" match `john@example.com` (the standard analyser splits on `@` and `.`),
- * while `recipient.keyword` still supports exact-match filtering.
+ * `recipient` uses a CUSTOM ANALYSER. This was a real bug found in testing: with
+ * Elasticsearch's default `standard` analyser, `dave.wilson@example.com` becomes a
+ * single token (`dave.wilson`), so searching for "dave" returned nothing. The
+ * `email_analyzer` below splits on every non-alphanumeric character, so the address
+ * becomes [dave, wilson, example, com] and "dave" matches while the full address
+ * still matches too. `recipient.keyword` remains for exact-match filtering.
+ *
+ * NOTE: an analyser cannot be changed on an existing field — Elasticsearch refuses
+ * to update the mapping of a live field. Changing it means deleting the index and
+ * rebuilding it, which is exactly what `npm run es:reindex` does (PostgreSQL is the
+ * source of truth, so the index is always disposable).
  */
 const EMAIL_INDEX_MAPPING = {
   properties: {
@@ -50,6 +58,7 @@ const EMAIL_INDEX_MAPPING = {
     batchId: { type: 'keyword' },
     recipient: {
       type: 'text',
+      analyzer: 'email_analyzer',
       fields: { keyword: { type: 'keyword', ignore_above: 256 } },
     },
     subject: {
@@ -166,6 +175,19 @@ export async function ensureIndex(): Promise<boolean> {
         // primary + one replica would stay permanently "yellow" here.
         number_of_shards: 1,
         number_of_replicas: 0,
+        analysis: {
+          tokenizer: {
+            // Split on anything that is not a letter or digit.
+            email_tokenizer: { type: 'pattern', pattern: '[^a-zA-Z0-9]+' },
+          },
+          analyzer: {
+            email_analyzer: {
+              type: 'custom',
+              tokenizer: 'email_tokenizer',
+              filter: ['lowercase'],
+            },
+          },
+        },
       },
     });
     log.info('Created search index', { index: EMAIL_INDEX });
@@ -269,6 +291,14 @@ export async function searchEmails(
               // Tolerates typos ("jhon@example.com") — a capability PostgreSQL
               // `LIKE` cannot provide.
               fuzziness: 'AUTO',
+              /**
+               * AND, not OR. With OR, searching a full address tokenises to
+               * [dave, wilson, example, com] and matches every email containing
+               * "com" — measured: 5 results for one address. Requiring all terms
+               * returns exactly the intended row while leaving single-word and
+               * typo searches unaffected.
+               */
+              operator: 'AND',
             },
           },
         ],

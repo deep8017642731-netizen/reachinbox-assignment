@@ -73,13 +73,23 @@ export interface EmailJobData {
 /**
  * Deterministic BullMQ job id for an email.
  *
+ * WHY A DASH AND NOT A COLON
+ * The assignment brief suggests `email:<emailId>`, which is not possible: BullMQ
+ * composes its Redis keys by joining parts with `:`, so a custom job id containing
+ * a colon is rejected outright with "Custom Id cannot contain :". Using `email-`
+ * keeps the id readable, globally unique (the email UUID is unique) and valid.
+ *
  * Deterministic ids are the first line of defence against duplicate sends: BullMQ
  * refuses to create a second job with an id that already exists, so a retried
- * enqueue (e.g. an HTTP request replayed by the user's browser) cannot create a
- * duplicate send. The database status check is the second line of defence.
+ * enqueue (e.g. a replayed HTTP request) cannot create a duplicate send. The
+ * database status check is the second line of defence.
  */
 export function buildEmailJobId(emailId: string): string {
-  return `email:${emailId}`;
+  if (emailId.includes(':')) {
+    // Fail here, with a clear message, rather than deep inside BullMQ.
+    throw new Error(`Email id must not contain ':' (received: ${emailId})`);
+  }
+  return `email-${emailId}`;
 }
 
 /* -------------------------------------------------------------------------- */
